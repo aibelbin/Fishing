@@ -6,13 +6,13 @@ app = FastAPI()
 
 safe = False
 
-app.get("/check-url")
+@app.get("/check-url")
 def checkurl(url):
     with open('trancoList.csv', mode ='r') as file:    
        csvFile = csv.DictReader(file)
        for lines in csvFile:
             if url in lines:
-                return True
+                return {"safe" : True}
             else: 
-                return False
+                return {"safe" : False}
     
