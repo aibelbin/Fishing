@@ -3,7 +3,7 @@ import sys
 import subprocess
 import csv
 from io import StringIO
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import openpyxl
 import time
 import threading
@@ -36,8 +36,11 @@ def read_whitelist(xlsx_path: str) -> List[str]:
             out.append(d)
     return out
 
-def run_dnstwist(domain: str) -> Tuple[List[str], List[Dict[str, str]]]:
-    cmd = ["dnstwist", "--registered", "--format", "csv", domain]
+def run_dnstwist(domain: str, tlds_path: Optional[str]) -> Tuple[List[str], List[Dict[str, str]]]:
+    cmd = ["dnstwist", "--registered"]
+    if tlds_path:
+        cmd += ["--tld", tlds_path]
+    cmd += ["--format", "csv", domain]
     result = {"returncode": None, "stdout": "", "stderr": ""}
     def target():
         p = subprocess.run(cmd, capture_output=True, text=True)
@@ -145,8 +148,8 @@ def write_csv(path: str, header: List[str], rows: List[Dict[str, str]]):
             writer.writerow([r.get(k, "") for k in header])
     os.replace(tmp, path)
 
-def process_domain(domain: str, out_dir: str) -> Tuple[int, int]:
-    h2, r2 = run_dnstwist(domain)
+def process_domain(domain: str, out_dir: str, tlds_path: Optional[str]) -> Tuple[int, int]:
+    h2, r2 = run_dnstwist(domain, tlds_path)
     if not h2 and not r2:
         return 0, 0
     out_path = os.path.join(out_dir, f"{domain}.csv")
@@ -177,6 +180,9 @@ def main():
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     xlsx = os.path.join(root, "files", "white_list.xlsx")
     out_dir = os.path.join(root, "sus")
+    tlds_path = os.path.join(root, "files", "tlds.txt")
+    if not os.path.isfile(tlds_path):
+        tlds_path = None
     if not os.path.isfile(xlsx):
         sys.exit(1)
     if not os.path.isdir(out_dir):
@@ -186,7 +192,7 @@ def main():
     print(f"domains: {total}", flush=True)
     for i, d in enumerate(domains, 1):
         print(f"[{i}/{total}] {d}", flush=True)
-        added, total_rows = process_domain(d, out_dir)
+        added, total_rows = process_domain(d, out_dir, tlds_path)
         print(f"[{i}/{total}] {d} added:{added} total:{total_rows}", flush=True)
 
 if __name__ == "__main__":
