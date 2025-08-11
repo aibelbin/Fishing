@@ -7,6 +7,7 @@ from typing import List, Dict, Tuple, Optional
 import openpyxl
 import time
 import threading
+import concurrent.futures as cf
 
 def read_whitelist(xlsx_path: str) -> List[str]:
     wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
@@ -41,26 +42,10 @@ def run_dnstwist(domain: str, tlds_path: Optional[str]) -> Tuple[List[str], List
     if tlds_path:
         cmd += ["--tld", tlds_path]
     cmd += ["--format", "csv", domain]
-    result = {"returncode": None, "stdout": "", "stderr": ""}
-    def target():
-        p = subprocess.run(cmd, capture_output=True, text=True)
-        result["returncode"] = p.returncode
-        result["stdout"] = p.stdout
-        result["stderr"] = p.stderr
-    t = threading.Thread(target=target, daemon=True)
-    t.start()
-    start = time.time()
-    frames = ["|", "/", "-", "\\"]
-    fi = 0
-    while t.is_alive():
-        msg = f"\r[{frames[fi]}] dnstwist {domain} {int(time.time()-start)}s"
-        print(msg, end="", flush=True)
-        fi = (fi + 1) % len(frames)
-        time.sleep(0.15)
-    print(f"\r[+] dnstwist {domain} {int(time.time()-start)}s", flush=True)
-    if result["returncode"] != 0 or not result["stdout"].strip():
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0 or not p.stdout.strip():
         return [], []
-    sio = StringIO(result["stdout"])
+    sio = StringIO(p.stdout)
     reader = csv.reader(sio)
     rows = list(reader)
     if not rows:
@@ -148,10 +133,11 @@ def write_csv(path: str, header: List[str], rows: List[Dict[str, str]]):
             writer.writerow([r.get(k, "") for k in header])
     os.replace(tmp, path)
 
-def process_domain(domain: str, out_dir: str, tlds_path: Optional[str]) -> Tuple[int, int]:
+def process_domain(domain: str, out_dir: str, tlds_path: Optional[str]) -> Tuple[str, int, int, int]:
+    s = time.time()
     h2, r2 = run_dnstwist(domain, tlds_path)
     if not h2 and not r2:
-        return 0, 0
+        return domain, 0, 0, int(time.time() - s)
     out_path = os.path.join(out_dir, f"{domain}.csv")
     if os.path.isfile(out_path):
         h1, r1 = read_existing_csv(out_path)
@@ -171,10 +157,10 @@ def process_domain(domain: str, out_dir: str, tlds_path: Optional[str]) -> Tuple
                     added += 1
         h, rows = merge_rows(h1, r1, h2, r2)
         write_csv(out_path, h, rows)
-        return added, len(rows)
+        return domain, added, len(rows), int(time.time() - s)
     else:
         write_csv(out_path, h2, r2)
-        return len(r2), len(r2)
+        return domain, len(r2), len(r2), int(time.time() - s)
 
 def main():
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -189,11 +175,46 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
     domains = read_whitelist(xlsx)
     total = len(domains)
-    print(f"domains: {total}", flush=True)
-    for i, d in enumerate(domains, 1):
-        print(f"[{i}/{total}] {d}", flush=True)
-        added, total_rows = process_domain(d, out_dir, tlds_path)
-        print(f"[{i}/{total}] {d} added:{added} total:{total_rows}", flush=True)
+    env_workers = os.getenv("URL_EXTRACTOR_WORKERS")
+    try:
+        env_workers_val = int(env_workers) if env_workers else None
+    except Exception:
+        env_workers_val = None
+    cpu = os.cpu_count() or 4
+    workers = min(total, env_workers_val if env_workers_val and env_workers_val > 0 else cpu)
+    print(f"domains:{total} workers:{workers}", flush=True)
+    stop = threading.Event()
+    start = time.time()
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(process_domain, d, out_dir, tlds_path) for d in domains]
+        def status():
+            frames = ["|", "/", "-", "\\"]
+            i = 0
+            while not stop.is_set():
+                done = sum(1 for f in futs if f.done())
+                running = sum(1 for f in futs if f.running())
+                pending = total - done - running
+                elapsed = int(time.time() - start)
+                s = f"\r[{frames[i]}] running:{running} done:{done}/{total} pending:{pending} elapsed:{elapsed}s"
+                print(s, end="", flush=True)
+                i = (i + 1) % 4
+                time.sleep(0.2)
+        th = threading.Thread(target=status, daemon=True)
+        th.start()
+        done_count = 0
+        for f in cf.as_completed(futs):
+            try:
+                domain, added, total_rows, dur = f.result()
+            except Exception:
+                domain, added, total_rows, dur = "unknown", 0, 0, 0
+            done_count += 1
+            sys.stdout.write("\r" + " " * 120 + "\r")
+            sys.stdout.flush()
+            print(f"[{done_count}/{total}] {domain} added:{added} total:{total_rows} time:{dur}s", flush=True)
+        stop.set()
+        th.join()
+    elapsed = int(time.time() - start)
+    print(f"done elapsed:{elapsed}s", flush=True)
 
 if __name__ == "__main__":
     main()
