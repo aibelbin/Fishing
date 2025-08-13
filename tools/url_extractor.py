@@ -8,6 +8,8 @@ import openpyxl
 import time
 import threading
 import concurrent.futures as cf
+import requests
+import json
 
 def read_whitelist(xlsx_path: str) -> List[str]:
     wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
@@ -136,6 +138,49 @@ def write_csv(path: str, header: List[str], rows: List[Dict[str, str]]):
 def process_domain(domain: str, out_dir: str, tlds_path: Optional[str]) -> Tuple[str, int, int, int]:
     s = time.time()
     h2, r2 = run_dnstwist(domain, tlds_path)
+    kw_parts = domain.split('.')
+    if len(kw_parts) >= 2:
+        keyword = kw_parts[-2]
+    else:
+        keyword = kw_parts[0]
+    platform_map = {"ngrok": "ngrok.io", "vercel": "vercel.app", "netlify": "netlify.app"}
+    ct_rows = []
+    def fetch(platform, base):
+        try:
+            params = {"q": f"%{keyword}%.{base}", "output": "json"}
+            r = requests.get("https://crt.sh/", params=params, timeout=15)
+            if r.status_code != 200:
+                return []
+            data = json.loads(r.text)
+            out = []
+            seen_local = set()
+            for entry in data:
+                name = entry.get("name_value")
+                if not name:
+                    continue
+                for line in str(name).split("\n"):
+                    d = line.strip().lower()
+                    if d.endswith(base) and keyword in d and d not in seen_local:
+                        seen_local.add(d)
+                        out.append({"domain": d, "type": "ct_log", "source": platform})
+            return out
+        except Exception:
+            return []
+    with cf.ThreadPoolExecutor(max_workers=3) as ex:
+        futs = [ex.submit(fetch, p, b) for p, b in platform_map.items()]
+        for f in futs:
+            try:
+                ct_rows.extend(f.result())
+            except Exception:
+                continue
+    if ct_rows:
+        if not h2:
+            h2 = ["domain", "type", "source"]
+        existing_cols = set(h2)
+        for col in ["domain", "type", "source"]:
+            if col not in existing_cols:
+                h2.append(col)
+        r2.extend(ct_rows)
     if not h2 and not r2:
         return domain, 0, 0, int(time.time() - s)
     out_path = os.path.join(out_dir, f"{domain}.csv")
