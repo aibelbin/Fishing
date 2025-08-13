@@ -143,7 +143,19 @@ def process_domain(domain: str, out_dir: str, tlds_path: Optional[str]) -> Tuple
         keyword = kw_parts[-2]
     else:
         keyword = kw_parts[0]
-    platform_map = {"ngrok": "ngrok.io", "vercel": "vercel.app", "netlify": "netlify.app"}
+        platform_map = {
+            "ngrok": "ngrok.io",
+            "vercel": "vercel.app",
+            "netlify": "netlify.app",
+            "github_pages": "github.io",
+            "cloudflare_pages": "pages.dev",
+            "heroku": "herokuapp.com",
+            "firebase": "web.app",
+            "surge": "surge.sh",
+            "glitch": "glitch.me",
+            "000webhost": "000webhostapp.com"
+        }
+
     ct_rows = []
     def fetch(platform, base):
         try:
